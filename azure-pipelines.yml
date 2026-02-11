@@ -5,7 +5,7 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
-  azureServiceConnection: 'YOUR-AZDO-SERVICE-CONNECTION-NAME'
+  azureServiceConnection: 'DDI-TEST'
   resourceGroupName: 'rg-pg-demo-dev'
   location: 'westeurope'
   serverName: 'pgflexdemo$(Build.BuildId)'   # ensures uniqueness per run
