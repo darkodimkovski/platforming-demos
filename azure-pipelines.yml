@@ -1,0 +1,60 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  azureServiceConnection: 'YOUR-AZDO-SERVICE-CONNECTION-NAME'
+  resourceGroupName: 'rg-pg-demo-dev'
+  location: 'westeurope'
+  serverName: 'pgflexdemo$(Build.BuildId)'   # ensures uniqueness per run
+  dbName: 'appdb'
+  adminLogin: 'pgadmin'
+
+steps:
+- task: AzureCLI@2
+  displayName: 'Deploy PostgreSQL Flexible Server (Bicep) and capture outputs'
+  inputs:
+    azureSubscription: '$(azureServiceConnection)'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: |
+      set -euo pipefail
+
+      echo "Creating/ensuring resource group..."
+      az group create \
+        --name "$(resourceGroupName)" \
+        --location "$(location)" \
+        -o none
+
+      echo "Deploying bicep..."
+      deployName="pgflex-$(Build.BuildId)"
+
+      az deployment group create \
+        --name "$deployName" \
+        --resource-group "$(resourceGroupName)" \
+        --template-file main.bicep \
+        --parameters \
+          location="$(location)" \
+          serverName="$(serverName)" \
+          dbName="$(dbName)" \
+          administratorLogin="$(adminLogin)" \
+        -o none
+
+      echo "Fetching deployment outputs as JSON..."
+      az deployment group show \
+        --name "$deployName" \
+        --resource-group "$(resourceGroupName)" \
+        --query "properties.outputs" \
+        -o json > outputs.json
+
+      echo "outputs.json created:"
+      cat outputs.json
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish deployment outputs (outputs.json)'
+  inputs:
+    PathtoPublish: 'outputs.json'
+    ArtifactName: 'iac-outputs'
+    publishLocation: 'Container'
