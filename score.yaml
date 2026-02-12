@@ -1,0 +1,16 @@
+# Workload specification for PostgreSQL backend
+# Only essential parameters - everything else is auto-generated
+
+apiVersion: platform/v1
+kind: PostgresBackend
+
+metadata:
+  name: myapp
+
+spec:
+  environment: dev
+  
+  # Optional overrides (defaults shown)
+  # postgresVersion: "16"
+  # computeTier: Burstable    # Burstable | GeneralPurpose | MemoryOptimized
+  # storageSizeGb: 32

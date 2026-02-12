@@ -6,15 +6,11 @@ pool:
 
 variables:
   azureServiceConnection: 'DDI-TEST'
-  resourceGroupName: 'rg-pg-demo-dev'
   location: 'westeurope'
-  serverName: 'pgflexdemo$(Build.BuildId)'   # ensures uniqueness per run
-  dbName: 'appdb'
-  adminLogin: 'pgadmin'
 
 steps:
 - task: AzureCLI@2
-  displayName: 'Deploy PostgreSQL Flexible Server (Bicep) and capture outputs'
+  displayName: 'Deploy PostgreSQL Flexible Server from workload spec'
   inputs:
     azureSubscription: '$(azureServiceConnection)'
     scriptType: bash
@@ -22,34 +18,45 @@ steps:
     inlineScript: |
       set -euo pipefail
 
-      echo "Creating/ensuring resource group..."
-      az group create \
-        --name "$(resourceGroupName)" \
-        --location "$(location)" \
-        -o none
+      # Parse workload spec
+      WORKLOAD_NAME=$(yq -r '.metadata.name' score.yaml)
+      ENVIRONMENT=$(yq -r '.spec.environment // "dev"' score.yaml)
+      PG_VERSION=$(yq -r '.spec.postgresVersion // "16"' score.yaml)
+      COMPUTE_TIER=$(yq -r '.spec.computeTier // "Burstable"' score.yaml)
+      STORAGE_GB=$(yq -r '.spec.storageSizeGb // 32' score.yaml)
+
+      echo "Workload: $WORKLOAD_NAME | Env: $ENVIRONMENT"
+
+      # Resource group from workload name
+      RG_NAME="rg-${WORKLOAD_NAME}-${ENVIRONMENT}"
+
+      echo "Creating/ensuring resource group $RG_NAME..."
+      az group create --name "$RG_NAME" --location "$(location)" -o none
 
       echo "Deploying bicep..."
-      deployName="pgflex-$(Build.BuildId)"
+      DEPLOY_NAME="deploy-${WORKLOAD_NAME}-$(Build.BuildId)"
 
       az deployment group create \
-        --name "$deployName" \
-        --resource-group "$(resourceGroupName)" \
+        --name "$DEPLOY_NAME" \
+        --resource-group "$RG_NAME" \
         --template-file main.bicep \
         --parameters \
+          workloadName="$WORKLOAD_NAME" \
+          environment="$ENVIRONMENT" \
           location="$(location)" \
-          serverName="$(serverName)" \
-          dbName="$(dbName)" \
-          administratorLogin="$(adminLogin)" \
+          postgresVersion="$PG_VERSION" \
+          computeTier="$COMPUTE_TIER" \
+          storageSizeGb="$STORAGE_GB" \
         -o none
 
-      echo "Fetching deployment outputs as JSON..."
+      echo "Fetching deployment outputs..."
       az deployment group show \
-        --name "$deployName" \
-        --resource-group "$(resourceGroupName)" \
+        --name "$DEPLOY_NAME" \
+        --resource-group "$RG_NAME" \
         --query "properties.outputs" \
         -o json > outputs.json
 
-      echo "outputs.json created:"
+      echo "outputs.json:"
       cat outputs.json
 
 - task: PublishBuildArtifacts@1

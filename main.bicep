@@ -1,43 +1,51 @@
+@description('Workload name - used to generate unique resource names')
+param workloadName string
+
+@description('Environment (dev, staging, prod)')
+@allowed(['dev', 'staging', 'prod'])
+param environment string = 'dev'
+
 @description('Azure region for the deployment')
 param location string = resourceGroup().location
 
-@description('PostgreSQL Flexible Server name (must be globally unique)')
-param serverName string
-
-@description('Database name to create on the server')
-param dbName string = 'appdb'
-
-@description('Admin username (cannot be "postgres")')
-param administratorLogin string
-
 @description('PostgreSQL version')
-@allowed([
-  '14'
-  '15'
-  '16'
-])
-param version string = '16'
+@allowed(['14', '15', '16'])
+param postgresVersion string = '16'
 
-@description('Compute SKU name. Example: Standard_D2s_v3')
-param skuName string = 'Standard_D2s_v3'
+@description('Compute tier')
+@allowed(['Burstable', 'GeneralPurpose', 'MemoryOptimized'])
+param computeTier string = 'Burstable'
 
 @description('Storage size in GB')
 param storageSizeGb int = 32
 
-// Generate a random password for demo purposes
-var generatedPassword = '${uniqueString(resourceGroup().id, serverName)}!Aa1${uniqueString(deployment().name, serverName)}'
+// Generate unique names and credentials
+var uniqueSuffix = uniqueString(resourceGroup().id, workloadName)
+var serverName = 'pgflex-${workloadName}-${environment}-${uniqueSuffix}'
+var dbName = '${workloadName}db'
+var administratorLogin = 'pgadmin'
+var generatedPassword = '${uniqueString(resourceGroup().id, workloadName)}!Aa1${uniqueString(subscription().subscriptionId, workloadName)}'
+
+// SKU mapping based on tier
+var skuMap = {
+  Burstable: 'Standard_B1ms'
+  GeneralPurpose: 'Standard_D2s_v3'
+  MemoryOptimized: 'Standard_E2s_v3'
+}
+var skuName = skuMap[computeTier]
 
 resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2022-12-01' = {
   name: serverName
   location: location
   sku: {
     name: skuName
-    tier: 'GeneralPurpose'
+    tier: computeTier
   }
   properties: {
     administratorLogin: administratorLogin
+    #disable-next-line use-secure-value-for-secure-inputs
     administratorLoginPassword: generatedPassword
-    version: version
+    version: postgresVersion
 
     storage: {
       storageSizeGB: storageSizeGb
