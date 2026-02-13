@@ -6,7 +6,7 @@ param workloadName string
 param environment string = 'dev'
 
 @description('Azure region for the deployment')
-param location string = resourceGroup().location
+param location string
 
 @description('PostgreSQL version')
 @allowed(['14', '15', '16'])

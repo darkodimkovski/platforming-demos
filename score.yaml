@@ -1,5 +1,5 @@
-# Workload specification for PostgreSQL backend
-# Only essential parameters - everything else is auto-generated
+# Workload specification for developer platform backend
+# Drives both subscription vending and workload resource provisioning
 
 apiVersion: platform/v1
 kind: PostgresBackend
@@ -8,9 +8,14 @@ metadata:
   name: myapp
 
 spec:
-  environment: dev
-  
-  # Optional overrides (defaults shown)
-  # postgresVersion: "16"
-  # computeTier: Burstable    # Burstable | GeneralPurpose | MemoryOptimized
-  # storageSizeGb: 32
+  environment: dev         # dev | staging | prod
+  workloadType: Production # Production | DevTest (subscription offer type)
+
+  # Platform config (typically set by the platform team or in a shared config)
+  # managementGroupId: 'mg-workloads-dev'
+  # ownerPrincipalId: '00000000-0000-0000-0000-000000000000'
+
+  # Optional resource overrides (defaults shown)
+  postgresVersion: "16"
+  computeTier: Burstable   # Burstable | GeneralPurpose | MemoryOptimized
+  storageSizeGb: 32

@@ -6,62 +6,140 @@ pool:
 
 variables:
   azureServiceConnection: 'DDI-TEST'
-  location: 'westeurope'
+  location: 'norwayeast'
+  # Management group to deploy vending at (must match your Azure hierarchy)
+  managementGroupId: 'mg-workloads'
 
-steps:
-- task: AzureCLI@2
-  displayName: 'Deploy PostgreSQL Flexible Server from workload spec'
-  inputs:
-    azureSubscription: '$(azureServiceConnection)'
-    scriptType: bash
-    scriptLocation: inlineScript
-    inlineScript: |
-      set -euo pipefail
+stages:
+# ── Stage 1: Subscription Vending ─────────────────────────────────────────
+- stage: VendSubscription
+  displayName: 'Vend workload subscription'
+  jobs:
+  - job: Vend
+    displayName: 'Create / reuse isolated subscription'
+    steps:
+    - task: AzureCLI@2
+      name: vend
+      displayName: 'Run subscription vending (Bicep)'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
 
-      # Parse workload spec
-      WORKLOAD_NAME=$(yq -r '.metadata.name' score.yaml)
-      ENVIRONMENT=$(yq -r '.spec.environment // "dev"' score.yaml)
-      PG_VERSION=$(yq -r '.spec.postgresVersion // "16"' score.yaml)
-      COMPUTE_TIER=$(yq -r '.spec.computeTier // "Burstable"' score.yaml)
-      STORAGE_GB=$(yq -r '.spec.storageSizeGb // 32' score.yaml)
+          # Parse workload spec
+          WORKLOAD_NAME=$(yq -r '.metadata.name' score.yaml)
+          ENVIRONMENT=$(yq -r '.spec.environment // "dev"' score.yaml)
+          WORKLOAD_TYPE=$(yq -r '.spec.workloadType // "Production"' score.yaml)
+          OWNER_PRINCIPAL=$(yq -r '.spec.ownerPrincipalId // ""' score.yaml)
+          MG_ID=$(yq -r '.spec.managementGroupId // "$(managementGroupId)"' score.yaml)
 
-      echo "Workload: $WORKLOAD_NAME | Env: $ENVIRONMENT"
+          echo "Vending subscription for workload=$WORKLOAD_NAME env=$ENVIRONMENT"
 
-      # Resource group from workload name
-      RG_NAME="rg-${WORKLOAD_NAME}-${ENVIRONMENT}"
+          DEPLOY_NAME="vend-${WORKLOAD_NAME}-${ENVIRONMENT}-$(Build.BuildId)"
 
-      echo "Creating/ensuring resource group $RG_NAME..."
-      az group create --name "$RG_NAME" --location "$(location)" -o none
+          az deployment mg create \
+            --name "$DEPLOY_NAME" \
+            --management-group-id "$MG_ID" \
+            --location "$(location)" \
+            --template-file infra/subscription-vending.bicep \
+            --parameters \
+              workloadName="$WORKLOAD_NAME" \
+              environment="$ENVIRONMENT" \
+              location="$(location)" \
+              subscriptionBillingScope="$(SUBSCRIPTION_BILLING_SCOPE)" \
+              managementGroupId="$MG_ID" \
+              subscriptionWorkload="$WORKLOAD_TYPE" \
+              ownerPrincipalId="$OWNER_PRINCIPAL" \
+            -o none
 
-      echo "Deploying bicep..."
-      DEPLOY_NAME="deploy-${WORKLOAD_NAME}-$(Build.BuildId)"
+          # Capture outputs
+          OUTPUTS=$(az deployment mg show \
+            --name "$DEPLOY_NAME" \
+            --management-group-id "$MG_ID" \
+            --query "properties.outputs" -o json)
 
-      az deployment group create \
-        --name "$DEPLOY_NAME" \
-        --resource-group "$RG_NAME" \
-        --template-file main.bicep \
-        --parameters \
-          workloadName="$WORKLOAD_NAME" \
-          environment="$ENVIRONMENT" \
-          location="$(location)" \
-          postgresVersion="$PG_VERSION" \
-          computeTier="$COMPUTE_TIER" \
-          storageSizeGb="$STORAGE_GB" \
-        -o none
+          SUB_ID=$(echo "$OUTPUTS" | jq -r '.subscriptionId.value')
+          echo "Vended subscriptionId: $SUB_ID"
 
-      echo "Fetching deployment outputs..."
-      az deployment group show \
-        --name "$DEPLOY_NAME" \
-        --resource-group "$RG_NAME" \
-        --query "properties.outputs" \
-        -o json > outputs.json
+          # Pass to next stage
+          echo "##vso[task.setvariable variable=subscriptionId;isOutput=true]$SUB_ID"
 
-      echo "outputs.json:"
-      cat outputs.json
+          echo "$OUTPUTS" > vending-outputs.json
 
-- task: PublishBuildArtifacts@1
-  displayName: 'Publish deployment outputs (outputs.json)'
-  inputs:
-    PathtoPublish: 'outputs.json'
-    ArtifactName: 'iac-outputs'
-    publishLocation: 'Container'
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish vending outputs'
+      inputs:
+        PathtoPublish: 'vending-outputs.json'
+        ArtifactName: 'vending-outputs'
+        publishLocation: 'Container'
+
+# ── Stage 2: Deploy Workload Resources ────────────────────────────────────
+- stage: DeployWorkload
+  displayName: 'Deploy workload resources'
+  dependsOn: VendSubscription
+  variables:
+    subscriptionId: $[ stageDependencies.VendSubscription.Vend.outputs['vend.subscriptionId'] ]
+  jobs:
+  - job: Deploy
+    displayName: 'Deploy PostgreSQL into vended subscription'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Deploy workload Bicep'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+
+          # Parse workload spec
+          WORKLOAD_NAME=$(yq -r '.metadata.name' score.yaml)
+          ENVIRONMENT=$(yq -r '.spec.environment // "dev"' score.yaml)
+          PG_VERSION=$(yq -r '.spec.postgresVersion // "16"' score.yaml)
+          COMPUTE_TIER=$(yq -r '.spec.computeTier // "Burstable"' score.yaml)
+          STORAGE_GB=$(yq -r '.spec.storageSizeGb // 32' score.yaml)
+
+          SUB_ID="$(subscriptionId)"
+          echo "Deploying into subscription: $SUB_ID"
+
+          # Switch subscription context
+          az account set --subscription "$SUB_ID"
+
+          # Create resource group in vended subscription
+          RG_NAME="rg-${WORKLOAD_NAME}-${ENVIRONMENT}"
+          az group create --name "$RG_NAME" --location "$(location)" -o none
+
+          # Deploy workload resources
+          DEPLOY_NAME="deploy-${WORKLOAD_NAME}-$(Build.BuildId)"
+
+          az deployment group create \
+            --name "$DEPLOY_NAME" \
+            --resource-group "$RG_NAME" \
+            --template-file main.bicep \
+            --parameters \
+              workloadName="$WORKLOAD_NAME" \
+              environment="$ENVIRONMENT" \
+              location="$(location)" \
+              postgresVersion="$PG_VERSION" \
+              computeTier="$COMPUTE_TIER" \
+              storageSizeGb="$STORAGE_GB" \
+            -o none
+
+          # Capture and publish outputs
+          az deployment group show \
+            --name "$DEPLOY_NAME" \
+            --resource-group "$RG_NAME" \
+            --query "properties.outputs" \
+            -o json > outputs.json
+
+          echo "outputs.json:"
+          cat outputs.json
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish deployment outputs (outputs.json)'
+      inputs:
+        PathtoPublish: 'outputs.json'
+        ArtifactName: 'iac-outputs'
+        publishLocation: 'Container'
