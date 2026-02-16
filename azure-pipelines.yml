@@ -5,10 +5,13 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
-  azureServiceConnection: 'DDI-TEST'
-  location: 'norwayeast'
-  # Management group to deploy vending at (must match your Azure hierarchy)
-  managementGroupId: 'initno-sandboxes'
+  - group: 'SUBSCRIPTION_BILLING_SCOPE'   # ← ADD THIS (exact name from Library)
+  - name: azureServiceConnection
+    value: 'DDI-TEST'
+  - name: location
+    value: 'norwayeast'
+  - name: managementGroupId
+    value: 'initno-sandboxes'
 
 stages:
 # ── Stage 1: Subscription Vending ─────────────────────────────────────────
@@ -28,15 +31,32 @@ stages:
         inlineScript: |
           set -euo pipefail
 
-          # Parse workload spec
-          WORKLOAD_NAME=$(yq -r '.metadata.name' score.yaml)
-          ENVIRONMENT=$(yq -r '.spec.environment // "dev"' score.yaml)
-          WORKLOAD_TYPE=$(yq -r '.spec.workloadType // "Production"' score.yaml)
-          OWNER_PRINCIPAL=$(yq -r '.spec.ownerPrincipalId // ""' score.yaml)
-          MG_ID=$(yq -r '.spec.managementGroupId // "$(managementGroupId)"' score.yaml)
+          # Ensure yq/jq exist (ubuntu-latest usually has jq; yq can vary)
+          if ! command -v yq >/dev/null 2>&1; then
+            echo "Installing yq..."
+            YQ_VERSION="v4.44.1"
+            sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          command -v jq >/dev/null 2>&1 || { echo "jq not found"; exit 1; }
 
-          echo "Vending subscription for workload=$WORKLOAD_NAME env=$ENVIRONMENT"
+          # Fail fast if not provided
+          if [[ -z "${SUBSCRIPTION_BILLING_SCOPE:-}" ]]; then
+            echo "SUBSCRIPTION_BILLING_SCOPE is empty/missing. Define it as a secret pipeline variable."
+            exit 1
+          fi
 
+          WORKLOAD_NAME="$(yq -r '.metadata.name // empty' score.yaml)"
+          if [[ -z "$WORKLOAD_NAME" ]]; then
+            echo "score.yaml missing required field: metadata.name"
+            exit 1
+          fi
+
+          ENVIRONMENT="$(yq -r '.spec.environment // "dev"' score.yaml)"
+          WORKLOAD_TYPE="$(yq -r '.spec.workloadType // "Production"' score.yaml)"
+          OWNER_PRINCIPAL="$(yq -r '.spec.ownerPrincipalId // ""' score.yaml)"
+
+          MG_ID="$(managementGroupId)"
           DEPLOY_NAME="vend-${WORKLOAD_NAME}-${ENVIRONMENT}-$(Build.BuildId)"
 
           az deployment mg create \
@@ -48,25 +68,32 @@ stages:
               workloadName="$WORKLOAD_NAME" \
               environment="$ENVIRONMENT" \
               location="$(location)" \
-              subscriptionBillingScope="$(SUBSCRIPTION_BILLING_SCOPE)" \
+              subscriptionBillingScope="$SUBSCRIPTION_BILLING_SCOPE" \
               managementGroupId="$MG_ID" \
               subscriptionWorkload="$WORKLOAD_TYPE" \
               ownerPrincipalId="$OWNER_PRINCIPAL" \
             -o none
 
           # Capture outputs
-          OUTPUTS=$(az deployment mg show \
+          OUTPUTS="$(az deployment mg show \
             --name "$DEPLOY_NAME" \
             --management-group-id "$MG_ID" \
-            --query "properties.outputs" -o json)
+            --query "properties.outputs" -o json)"
 
-          SUB_ID=$(echo "$OUTPUTS" | jq -r '.subscriptionId.value')
+          SUB_ID="$(echo "$OUTPUTS" | jq -r '.subscriptionId.value')"
+          if [[ -z "$SUB_ID" || "$SUB_ID" == "null" ]]; then
+            echo "Failed to read subscriptionId from outputs:"
+            echo "$OUTPUTS" | jq .
+            exit 1
+          fi
+
           echo "Vended subscriptionId: $SUB_ID"
-
-          # Pass to next stage
           echo "##vso[task.setvariable variable=subscriptionId;isOutput=true]$SUB_ID"
 
           echo "$OUTPUTS" > vending-outputs.json
+      env:
+        # This pulls the secret pipeline variable into the script environment
+        SUBSCRIPTION_BILLING_SCOPE: $(SUBSCRIPTION_BILLING_SCOPE)
 
     - task: PublishBuildArtifacts@1
       displayName: 'Publish vending outputs'
@@ -94,24 +121,29 @@ stages:
         inlineScript: |
           set -euo pipefail
 
-          # Parse workload spec
-          WORKLOAD_NAME=$(yq -r '.metadata.name' score.yaml)
-          ENVIRONMENT=$(yq -r '.spec.environment // "dev"' score.yaml)
-          PG_VERSION=$(yq -r '.spec.postgresVersion // "16"' score.yaml)
-          COMPUTE_TIER=$(yq -r '.spec.computeTier // "Burstable"' score.yaml)
-          STORAGE_GB=$(yq -r '.spec.storageSizeGb // 32' score.yaml)
+          if ! command -v yq >/dev/null 2>&1; then
+            echo "Installing yq..."
+            YQ_VERSION="v4.44.1"
+            sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
+
+          WORKLOAD_NAME="$(yq -r '.metadata.name // empty' score.yaml)"
+          [[ -n "$WORKLOAD_NAME" ]] || { echo "score.yaml missing metadata.name"; exit 1; }
+
+          ENVIRONMENT="$(yq -r '.spec.environment // "dev"' score.yaml)"
+          PG_VERSION="$(yq -r '.spec.postgresVersion // "16"' score.yaml)"
+          COMPUTE_TIER="$(yq -r '.spec.computeTier // "Burstable"' score.yaml)"
+          STORAGE_GB="$(yq -r '.spec.storageSizeGb // 32' score.yaml)"
 
           SUB_ID="$(subscriptionId)"
           echo "Deploying into subscription: $SUB_ID"
 
-          # Switch subscription context
           az account set --subscription "$SUB_ID"
 
-          # Create resource group in vended subscription
           RG_NAME="rg-${WORKLOAD_NAME}-${ENVIRONMENT}"
           az group create --name "$RG_NAME" --location "$(location)" -o none
 
-          # Deploy workload resources
           DEPLOY_NAME="deploy-${WORKLOAD_NAME}-$(Build.BuildId)"
 
           az deployment group create \
@@ -127,7 +159,6 @@ stages:
               storageSizeGb="$STORAGE_GB" \
             -o none
 
-          # Capture and publish outputs
           az deployment group show \
             --name "$DEPLOY_NAME" \
             --resource-group "$RG_NAME" \
