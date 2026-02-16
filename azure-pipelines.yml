@@ -5,7 +5,7 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
-  - group: 'SUBSCRIPTION_BILLING_SCOPE'   # ← ADD THIS (exact name from Library)
+  - group: 'SUBSCRIPTION_BILLING_SCOPE'
   - name: azureServiceConnection
     value: 'DDI-TEST'
   - name: location
@@ -31,33 +31,15 @@ stages:
         inlineScript: |
           set -euo pipefail
 
-          # Ensure yq/jq exist (ubuntu-latest usually has jq; yq can vary)
-          if ! command -v yq >/dev/null 2>&1; then
-            echo "Installing yq..."
-            YQ_VERSION="v4.44.1"
-            sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-            sudo chmod +x /usr/local/bin/yq
-          fi
-          command -v jq >/dev/null 2>&1 || { echo "jq not found"; exit 1; }
-
-          # Fail fast if not provided
-          if [[ -z "${SUBSCRIPTION_BILLING_SCOPE:-}" ]]; then
-            echo "SUBSCRIPTION_BILLING_SCOPE is empty/missing. Define it as a secret pipeline variable."
-            exit 1
-          fi
-
-          WORKLOAD_NAME="$(yq -r '.metadata.name // empty' score.yaml)"
-          if [[ -z "$WORKLOAD_NAME" ]]; then
-            echo "score.yaml missing required field: metadata.name"
-            exit 1
-          fi
-
-          ENVIRONMENT="$(yq -r '.spec.environment // "dev"' score.yaml)"
-          WORKLOAD_TYPE="$(yq -r '.spec.workloadType // "Production"' score.yaml)"
-          OWNER_PRINCIPAL="$(yq -r '.spec.ownerPrincipalId // ""' score.yaml)"
+          WORKLOAD_NAME="$(yq -r '.metadata.name' score.yaml)"
+          ENVIRONMENT="$(yq -r '.spec.environment' score.yaml)"
+          WORKLOAD_TYPE="$(yq -r '.spec.workloadType' score.yaml)"
+          OWNER_PRINCIPAL="$(yq -r '.spec.ownerPrincipalId' score.yaml)"
 
           MG_ID="$(managementGroupId)"
           DEPLOY_NAME="vend-${WORKLOAD_NAME}-${ENVIRONMENT}-$(Build.BuildId)"
+
+          echo "Vending subscription for workload=$WORKLOAD_NAME env=$ENVIRONMENT"
 
           az deployment mg create \
             --name "$DEPLOY_NAME" \
@@ -74,25 +56,18 @@ stages:
               ownerPrincipalId="$OWNER_PRINCIPAL" \
             -o none
 
-          # Capture outputs
           OUTPUTS="$(az deployment mg show \
             --name "$DEPLOY_NAME" \
             --management-group-id "$MG_ID" \
             --query "properties.outputs" -o json)"
 
           SUB_ID="$(echo "$OUTPUTS" | jq -r '.subscriptionId.value')"
-          if [[ -z "$SUB_ID" || "$SUB_ID" == "null" ]]; then
-            echo "Failed to read subscriptionId from outputs:"
-            echo "$OUTPUTS" | jq .
-            exit 1
-          fi
 
           echo "Vended subscriptionId: $SUB_ID"
           echo "##vso[task.setvariable variable=subscriptionId;isOutput=true]$SUB_ID"
 
           echo "$OUTPUTS" > vending-outputs.json
       env:
-        # This pulls the secret pipeline variable into the script environment
         SUBSCRIPTION_BILLING_SCOPE: $(SUBSCRIPTION_BILLING_SCOPE)
 
     - task: PublishBuildArtifacts@1
@@ -121,20 +96,11 @@ stages:
         inlineScript: |
           set -euo pipefail
 
-          if ! command -v yq >/dev/null 2>&1; then
-            echo "Installing yq..."
-            YQ_VERSION="v4.44.1"
-            sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-            sudo chmod +x /usr/local/bin/yq
-          fi
-
-          WORKLOAD_NAME="$(yq -r '.metadata.name // empty' score.yaml)"
-          [[ -n "$WORKLOAD_NAME" ]] || { echo "score.yaml missing metadata.name"; exit 1; }
-
-          ENVIRONMENT="$(yq -r '.spec.environment // "dev"' score.yaml)"
-          PG_VERSION="$(yq -r '.spec.postgresVersion // "16"' score.yaml)"
-          COMPUTE_TIER="$(yq -r '.spec.computeTier // "Burstable"' score.yaml)"
-          STORAGE_GB="$(yq -r '.spec.storageSizeGb // 32' score.yaml)"
+          WORKLOAD_NAME="$(yq -r '.metadata.name' score.yaml)"
+          ENVIRONMENT="$(yq -r '.spec.environment' score.yaml)"
+          PG_VERSION="$(yq -r '.spec.postgresVersion' score.yaml)"
+          COMPUTE_TIER="$(yq -r '.spec.computeTier' score.yaml)"
+          STORAGE_GB="$(yq -r '.spec.storageSizeGb' score.yaml)"
 
           SUB_ID="$(subscriptionId)"
           echo "Deploying into subscription: $SUB_ID"
