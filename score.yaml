@@ -12,8 +12,8 @@ spec:
   workloadType: Production # Production | DevTest (subscription offer type)
 
   # Platform config (typically set by the platform team or in a shared config)
-  # managementGroupId: 'mg-workloads-dev'
-  # ownerPrincipalId: '00000000-0000-0000-0000-000000000000'
+  managementGroupId: 'initno-sandboxes'
+  ownerPrincipalId: '48e4cd26-7979-43ab-8086-0b6b819ffd00'
 
   # Optional resource overrides (defaults shown)
   postgresVersion: "16"
